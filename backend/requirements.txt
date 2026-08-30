@@ -1,6 +1,8 @@
 fastapi
-langchain
+uvicorn[standard]
+sqlalchemy[asyncio]
 python-dotenv
-requests
-sqlalchemy
-uvicorn
+httpx
+python-jose[cryptography]
+alembic
+psycopg[binary,pool]
