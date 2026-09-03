@@ -37,13 +37,19 @@ async def list_repositories(
             },
         )
 
+    if resp.status_code == 401:
+        # GitHub token is expired or revoked — user must re-authenticate
+        raise HTTPException(
+            status_code=401,
+            detail="GitHub access token is invalid or expired. Please sign in again.",
+        )
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail="Failed to fetch repositories from GitHub")
 
     repos = resp.json()
 
     # Deduplicate repos
-    seen: set[int] = set()
+    seen: set[str] = set()
     unique_repos = []
     for repo in repos:
         if repo["name"] not in seen:

@@ -1,8 +1,9 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, DateTime, Text
+from sqlalchemy import String, DateTime, Text, Integer, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 from database import Base
+
 
 
 class User(Base):
@@ -31,3 +32,30 @@ class User(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+
+class IngestionJob(Base):
+    """Tracks the status of a background repo ingestion job."""
+    __tablename__ = "ingestion_jobs"
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    repo_full_name: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending") # pending | running | done | failed
+    total_chunks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    chunks_ingested: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
