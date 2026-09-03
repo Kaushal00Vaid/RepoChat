@@ -6,3 +6,9 @@ httpx
 python-jose[cryptography]
 alembic
 psycopg[binary,pool]
+openai
+qdrant-client
+tree-sitter
+tree-sitter-python
+tree-sitter-javascript
+inngest

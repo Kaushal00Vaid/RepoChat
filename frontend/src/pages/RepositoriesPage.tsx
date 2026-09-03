@@ -92,7 +92,7 @@ function RepoCard({ repo, onSelect }: { repo: Repo; onSelect: (r: Repo) => void 
 }
 
 export default function RepositoriesPage() {
-  const { user, loading: authLoading } = useAuth()
+  const { user, loading: authLoading, logout } = useAuth()
   const navigate = useNavigate()
 
   const [repos, setRepos] = useState<Repo[]>([])
@@ -116,6 +116,11 @@ export default function RepositoriesPage() {
       setError(null)
       try {
         const res = await fetch('/api/repos?per_page=100', { credentials: 'include' })
+        if (res.status === 401) {
+          await logout()
+          navigate('/login', { replace: true })
+          return
+        }
         if (!res.ok) throw new Error('Failed to load repositories')
         setRepos(await res.json())
       } catch (e: unknown) {
@@ -128,9 +133,7 @@ export default function RepositoriesPage() {
   }, [user])
 
   const handleSelect = (repo: Repo) => {
-    // TODO: Navigate to chat with selected repo
-    console.log('Selected repo:', repo.full_name)
-    alert(`Selected: ${repo.full_name}\n\nChat feature coming soon!`)
+    navigate(`/repositories/${repo.full_name}`, { state: { repo } })
   }
 
   const filtered = repos.filter(
