@@ -128,7 +128,7 @@ async def _fetch_file_content(url: str, token: str) -> str | None:
 @inngest_client.create_function(
     fn_id="repo-ingestion",
     trigger=inngest.TriggerEvent(event="repochat/repo.ingest"),
-    retries=3,
+    retries=1,
 )
 async def run_repo_ingestion(ctx: inngest.Context) -> dict[str, Any]:
     """

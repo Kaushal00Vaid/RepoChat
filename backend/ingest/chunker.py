@@ -187,33 +187,193 @@ _JS_CHUNK_TYPES = {
     "variable_declaration",     # catches `var foo = function(){}`
 }
 
+SMALL_NODE_LINES = 30   # code nodes > this are "large" and always get their own chunk
+LARGE_GAP_LINES  = 30   # non-code gaps >= this are "content" and get their own chunk(s)
+MAX_CHUNK_LINES  = 60   # hard cap on the line-span of an accumulated small-code group
+MIN_CHUNK_LINES  = 5    # minimum viable chunk size; tiny tails are folded into the prior sub-chunk
+
 
 def _lines(content: str) -> list[str]:
     return content.splitlines(keepends=True)
 
 
-def _extract_chunks_from_nodes(
-    nodes: list[Node],
+def _build_segments(
+    children: list[Node],
+    matched_types: set[str],
+) -> list[tuple[str, int, int]]:
+    """
+    Walk *direct* children of a root node and produce a flat list of
+    ``(kind, start_line, end_line)`` tuples.
+
+    ``kind`` is `"code"` for matched AST node types (functions / classes)
+    and ``"gap"`` for everything else: imports, constants, comments, blank
+    lines.  Adjacent gap entries are merged into a single contiguous segment
+    so that nothing between top-level nodes is ever lost.
+    """
+    segments: list[tuple[str, int, int]] = []
+    prev_end = -1
+
+    def _push_gap(start: int, end: int) -> None:
+        """Append a gap segment, extending the previous gap if adjacent."""
+        if start > end:
+            return
+        if segments and segments[-1][0] == "gap":
+            # Extend the existing trailing gap rather than creating a new entry
+            segments[-1] = ("gap", segments[-1][1], end)
+        else:
+            segments.append(("gap", start, end))
+
+    for child in children:
+        # Skip zero-width sentinel nodes (e.g. tree-sitter's end_of_file marker)
+        if child.start_point == child.end_point and child.type in ("end_of_file", "EOF"):
+            continue
+
+        c_start = child.start_point[0]
+        c_end = child.end_point[0]
+
+        # Cover any blank-line gap between the previous child and this one
+        if c_start > prev_end + 1:
+            _push_gap(prev_end + 1, c_start - 1)
+
+        if child.type in matched_types:
+            segments.append(("code", c_start, c_end))
+        else:
+            _push_gap(c_start, c_end)
+
+        prev_end = c_end
+
+    return segments
+
+
+def _merge_segments(
+    segments: list[tuple[str, int, int]],
     all_lines: list[str],
     file_path: str,
     language: str,
 ) -> list[Chunk]:
-    """Convert a flat list of tree-sitter nodes into Chunk objects."""
+    """
+    Collapse the flat segment list into Chunk objects.
+
+    Small code nodes (span ≤ SMALL_NODE_LINES) accumulate with each other and
+    adjacent glue gaps, capped at MAX_CHUNK_LINES total span.  When adding the
+    next small node would exceed the cap the current group is flushed first
+    (always at a node boundary — a node is never split in half).
+
+    Large code nodes (span > SMALL_NODE_LINES) are always isolated.
+
+    All merges preserve original source order.
+    """
+    groups: list[list[tuple[str, int, int]]] = []
+    current: list[tuple[str, int, int]] = []
+
+    def _has_code(lst: list) -> bool:
+        return any(s[0] == "code" for s in lst)
+
+    def _flush() -> None:
+        """Flush current into groups (or absorb into previous if gap-only)."""
+        nonlocal current
+        if not current:
+            return
+        if _has_code(current):
+            groups.append(current)
+        elif groups:
+            groups[-1].extend(current)   # trailing glue attaches to last group
+        current = []
+
+    def _emit_content_gap(start: int, end: int, glue_prefix: list) -> None:
+        """Split a content-sized gap into MAX_CHUNK_LINES sub-chunks.
+
+        Look-ahead: if emitting the standard-sized chunk would leave a tail
+        smaller than MIN_CHUNK_LINES, extend this chunk to absorb the tail
+        rather than emitting a near-noise fragment on the next iteration.
+        """
+        gap_pos = start
+        first = True
+        while gap_pos <= end:
+            natural_end = gap_pos + MAX_CHUNK_LINES - 1
+            # Would a standard split leave a tiny leftover tail?
+            if natural_end < end and (end - natural_end) < MIN_CHUNK_LINES:
+                gap_end = end   # absorb the tail into this sub-chunk
+            else:
+                gap_end = min(natural_end, end)
+            if first and glue_prefix:
+                groups.append(glue_prefix + [("gap", gap_pos, gap_end)])
+            else:
+                groups.append([("gap", gap_pos, gap_end)])
+            gap_pos = gap_end + 1
+            first = False
+
+    for seg in segments:
+        kind, start, end = seg
+        node_lines = end - start + 1
+
+        if kind == "gap":
+            if node_lines >= LARGE_GAP_LINES:
+                # Content gap — flush preceding code, then emit as own chunk(s)
+                if _has_code(current):
+                    groups.append(current)
+                    glue_prefix: list = []
+                else:
+                    glue_prefix = current   # gap-only glue becomes prefix of 1st sub-chunk
+                current = []
+                _emit_content_gap(start, end, glue_prefix)
+            else:
+                # Glue gap — absorb into current
+                current.append(seg)
+
+        else:  # "code"
+            is_large = node_lines > SMALL_NODE_LINES
+            if is_large:
+                if _has_code(current):
+                    groups.append(current)
+                    groups.append([seg])
+                    current = []
+                else:
+                    # Only glue pending — absorb into this large node's chunk
+                    current.append(seg)
+                    groups.append(current)
+                    current = []
+            else:
+                # Small code node: enforce MAX_CHUNK_LINES cap
+                if _has_code(current):
+                    projected_span = end - current[0][1] + 1
+                    if projected_span > MAX_CHUNK_LINES:
+                        # Flush first, then start fresh with this node
+                        groups.append(current)
+                        current = [seg]
+                    else:
+                        current.append(seg)
+                else:
+                    # No code yet (only glue glue, or empty) — just accumulate
+                    current.append(seg)
+
+    # Final flush
+    _flush()
+
+    # Build Chunk objects
     chunks: list[Chunk] = []
-    for idx, node in enumerate(nodes):
-        start = node.start_point[0]
-        end = node.end_point[0]
-        text = "".join(all_lines[start : end + 1])
+    for group in groups:
+        if not group:
+            continue
+        g_start = group[0][1]
+        g_end = group[-1][2]
+        text = "".join(all_lines[g_start : g_end + 1]).strip()
+        if not text:
+            continue
         chunks.append(
             Chunk(
                 file_path=file_path,
                 language=language,
-                start_line=start,
-                end_line=end,
-                content=text.strip(),
-                chunk_index=idx,
+                start_line=g_start,
+                end_line=g_end,
+                content=text,
+                chunk_index=0,  # re-indexed below
             )
         )
+
+    for i, chunk in enumerate(chunks):
+        chunk.chunk_index = i
+
     return chunks
 
 
@@ -234,31 +394,23 @@ def _fallback_chunk(file_path: str, content: str, language: str) -> list[Chunk]:
 
 def _chunk_python(file_path: str, content: str) -> list[Chunk]:
     tree = _py_parser.parse(content.encode())
-    top_level: list[Node] = []
-    for child in tree.root_node.children:
-        if child.type in _PY_CHUNK_TYPES:
-            top_level.append(child)
+    all_lines = _lines(content)
+    segments = _build_segments(tree.root_node.children, _PY_CHUNK_TYPES)
 
-    if not top_level:
+    if not any(kind == "code" for kind, _, _ in segments):
         return _fallback_chunk(file_path, content, "python")
 
-    return _extract_chunks_from_nodes(top_level, _lines(content), file_path, "python")
+    return _merge_segments(segments, all_lines, file_path, "python")
 
 
 def _chunk_js(file_path: str, content: str, language: str) -> list[Chunk]:
     tree = _js_parser.parse(content.encode())
-    top_level: list[Node] = []
+    all_lines = _lines(content)
+    # Use direct children only (no recursive walk) so gaps between top-level
+    # nodes are correctly detected and absorbed into adjacent chunks.
+    segments = _build_segments(tree.root_node.children, _JS_CHUNK_TYPES)
 
-    def _walk(node: Node) -> None:
-        if node.type in _JS_CHUNK_TYPES:
-            top_level.append(node)
-            return  # don't recurse into matched nodes
-        for child in node.children:
-            _walk(child)
-
-    _walk(tree.root_node)
-
-    if not top_level:
+    if not any(kind == "code" for kind, _, _ in segments):
         return _fallback_chunk(file_path, content, language)
 
-    return _extract_chunks_from_nodes(top_level, _lines(content), file_path, language)
+    return _merge_segments(segments, all_lines, file_path, language)
