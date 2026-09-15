@@ -28,11 +28,37 @@ interface JobStatus {
   updated_at: string
 }
 
+interface ChunkResult {
+  file_path: string
+  language: string
+  start_line: number
+  end_line: number
+  content: string
+  chunk_index: number
+  rrf_score: number
+}
+
+interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  text?: string
+  chunks?: ChunkResult[]
+  error?: string
+}
+
 // constants
 const SUPPORTED_LANGS = new Set(['Python', 'JavaScript', 'TypeScript'])
 const POLL_INTERVAL_MS = 2000
 
-// sub-components
+// Language colour map for syntax badge
+const LANG_COLORS: Record<string, { bg: string; text: string }> = {
+  python:     { bg: 'bg-blue-500/15',   text: 'text-blue-300' },
+  javascript: { bg: 'bg-yellow-500/15', text: 'text-yellow-300' },
+  typescript: { bg: 'bg-sky-500/15',    text: 'text-sky-300' },
+}
+
+// Sub-components
+
 function StatBadge({ icon, value, label }: { icon: React.ReactNode; value: number | string; label: string }) {
   return (
     <div className="flex items-center gap-1.5 text-slate-400 text-sm">
@@ -237,7 +263,281 @@ function IngestPanel({
   )
 }
 
+// Code Chunk Card
+
+function ChunkCard({ chunk, index }: { chunk: ChunkResult; index: number }) {
+  const [expanded, setExpanded] = useState(index < 3) // top 3 open by default
+  const langStyle = LANG_COLORS[chunk.language.toLowerCase()] ?? { bg: 'bg-slate-500/15', text: 'text-slate-300' }
+  const rrfPct = Math.min(100, Math.round(chunk.rrf_score * 10000) / 100)
+
+  return (
+    <div className="rounded-xl border border-white/8 bg-[#111118] overflow-hidden transition-all duration-200">
+      {/* Header — always visible */}
+      <button
+        id={`chunk-card-${index}`}
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-white/3 transition-colors group"
+      >
+        {/* Rank badge */}
+        <span className="shrink-0 w-6 h-6 rounded-md bg-violet-500/10 border border-violet-500/20 flex items-center justify-center text-[10px] font-bold text-violet-400">
+          {index + 1}
+        </span>
+
+        {/* File path */}
+        <span className="flex-1 min-w-0 font-mono text-xs text-slate-300 truncate">
+          {chunk.file_path}
+          <span className="text-slate-500 ml-1">:{chunk.start_line}–{chunk.end_line}</span>
+        </span>
+
+        {/* Language badge */}
+        <span className={`shrink-0 text-[10px] font-medium px-2 py-0.5 rounded-full ${langStyle.bg} ${langStyle.text}`}>
+          {chunk.language}
+        </span>
+
+        {/* RRF score */}
+        <span className="shrink-0 text-[10px] text-slate-500 font-mono hidden sm:block">
+          {rrfPct.toFixed(2)}%
+        </span>
+
+        {/* Chevron */}
+        <svg
+          className={`shrink-0 w-4 h-4 text-slate-600 group-hover:text-slate-400 transition-all duration-200 ${expanded ? 'rotate-180' : ''}`}
+          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+        </svg>
+      </button>
+
+      {/* Code body */}
+      {expanded && (
+        <div className="border-t border-white/6">
+          <pre className="overflow-x-auto p-4 text-xs leading-relaxed text-slate-300 font-mono whitespace-pre-wrap break-words max-h-80 overflow-y-auto scrollbar-thin">
+            <code>{chunk.content}</code>
+          </pre>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Skeleton Loader
+
+function ChunkSkeleton() {
+  return (
+    <div className="space-y-2">
+      {[...Array(4)].map((_, i) => (
+        <div key={i} className="rounded-xl border border-white/6 bg-[#111118] p-4 animate-pulse">
+          <div className="flex items-center gap-3">
+            <div className="w-6 h-6 rounded-md bg-white/5" />
+            <div className="flex-1 h-3 rounded bg-white/5" />
+            <div className="w-14 h-4 rounded-full bg-white/5" />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// Chat Panel
+
+function ChatPanel({ repoFullName }: { repoFullName: string }) {
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [query, setQuery] = useState('')
+  const [loading, setLoading] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const bottomRef = useRef<HTMLDivElement>(null)
+
+  // Auto-scroll to newest message
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
+
+  const handleSearch = useCallback(async () => {
+    const q = query.trim()
+    if (!q || loading) return
+
+    const userMsg: ChatMessage = { id: crypto.randomUUID(), role: 'user', text: q }
+    setMessages(prev => [...prev, userMsg])
+    setQuery('')
+    setLoading(true)
+
+    try {
+      const res = await fetch('/api/retrieve', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo_full_name: repoFullName, query: q, top_k: 20 }),
+      })
+
+      const data = await res.json()
+
+      if (!res.ok) {
+        const detail = data?.detail
+        const errorText =
+          typeof detail === 'string'
+            ? detail
+            : detail?.message ?? 'Retrieval failed. Please try again.'
+        setMessages(prev => [
+          ...prev,
+          { id: crypto.randomUUID(), role: 'assistant', error: errorText },
+        ])
+        return
+      }
+
+      setMessages(prev => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          chunks: data.chunks as ChunkResult[],
+        },
+      ])
+    } catch {
+      setMessages(prev => [
+        ...prev,
+        { id: crypto.randomUUID(), role: 'assistant', error: 'Network error. Please try again.' },
+      ])
+    } finally {
+      setLoading(false)
+      setTimeout(() => inputRef.current?.focus(), 50)
+    }
+  }, [query, loading, repoFullName])
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSearch()
+    }
+  }
+
+  const isEmpty = messages.length === 0
+
+  return (
+    <div className="flex flex-col rounded-2xl border border-white/8 bg-white/2 overflow-hidden">
+      {/* Panel header */}
+      <div className="flex items-center gap-3 px-5 py-4 border-b border-white/6">
+        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500/20 to-indigo-500/20 border border-violet-500/20 flex items-center justify-center shrink-0">
+          <svg className="w-4 h-4 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+          </svg>
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-white">Codebase Search</p>
+          <p className="text-[11px] text-slate-500">Hybrid vector + BM25 retrieval · RRF ranked</p>
+        </div>
+      </div>
+
+      {/* Message thread */}
+      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5 min-h-[200px] max-h-[600px]">
+        {isEmpty && !loading && (
+          <div className="flex flex-col items-center justify-center py-10 text-center gap-3">
+            <div className="w-12 h-12 rounded-2xl bg-violet-500/8 border border-violet-500/15 flex items-center justify-center">
+              <svg className="w-6 h-6 text-violet-400/60" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5" />
+              </svg>
+            </div>
+            <div>
+              <p className="text-sm font-medium text-slate-400">Ask anything about this codebase</p>
+              <p className="text-xs text-slate-600 mt-1">
+                e.g. "How does authentication work?" · "Where is rate limiting handled?"
+              </p>
+            </div>
+          </div>
+        )}
+
+        {messages.map(msg => (
+          <div key={msg.id} className={`flex flex-col gap-2 ${msg.role === 'user' ? 'items-end' : 'items-start'} w-full`}>
+            {msg.role === 'user' ? (
+              /* User bubble */
+              <div className="max-w-[85%] px-4 py-2.5 rounded-2xl rounded-tr-sm bg-violet-600/20 border border-violet-500/20">
+                <p className="text-sm text-slate-200 leading-relaxed">{msg.text}</p>
+              </div>
+            ) : msg.error ? (
+              /* Error bubble */
+              <div className="w-full flex items-start gap-2 px-4 py-3 rounded-2xl rounded-tl-sm bg-red-500/8 border border-red-500/15">
+                <svg className="w-4 h-4 text-red-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+                </svg>
+                <p className="text-sm text-red-300">{msg.error}</p>
+              </div>
+            ) : (
+              /* Chunks result */
+              <div className="w-full space-y-2">
+                <div className="flex items-center gap-2 px-1">
+                  <div className="w-1.5 h-1.5 rounded-full bg-violet-400" />
+                  <span className="text-[11px] text-slate-500 font-medium">
+                    {msg.chunks?.length ?? 0} relevant chunks found
+                  </span>
+                </div>
+                {msg.chunks && msg.chunks.length > 0 ? (
+                  <div className="space-y-2">
+                    {msg.chunks.map((chunk, i) => (
+                      <ChunkCard key={`${msg.id}-${i}`} chunk={chunk} index={i} />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="px-4 py-3 rounded-xl border border-white/6 bg-white/2">
+                    <p className="text-sm text-slate-500">No relevant chunks found for this query. Try different keywords.</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+
+        {/* Loading skeleton */}
+        {loading && (
+          <div className="w-full space-y-2">
+            <div className="flex items-center gap-2 px-1">
+              <span className="w-3 h-3 rounded-full border-2 border-violet-500/40 border-t-violet-400 animate-spin shrink-0" />
+              <span className="text-[11px] text-slate-500 font-medium">Searching codebase…</span>
+            </div>
+            <ChunkSkeleton />
+          </div>
+        )}
+
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Input bar */}
+      <div className="border-t border-white/6 p-4">
+        <div className="flex items-center gap-2 rounded-xl bg-white/4 border border-white/8 px-4 py-2.5 focus-within:border-violet-500/40 focus-within:bg-white/5 transition-all duration-200">
+          <input
+            id="chat-query-input"
+            ref={inputRef}
+            type="text"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Ask about this codebase…"
+            disabled={loading}
+            className="flex-1 bg-transparent text-sm text-slate-200 placeholder-slate-600 outline-none disabled:opacity-50"
+          />
+          <button
+            id="chat-send-btn"
+            onClick={handleSearch}
+            disabled={loading || !query.trim()}
+            className="shrink-0 w-8 h-8 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-all duration-150 active:scale-95 cursor-pointer"
+          >
+            {loading ? (
+              <span className="w-3.5 h-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+            ) : (
+              <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+              </svg>
+            )}
+          </button>
+        </div>
+        <p className="text-[10px] text-slate-700 mt-2 text-center">
+          Enter to search · Results ranked by Hybrid RRF (Vector + BM25)
+        </p>
+      </div>
+    </div>
+  )
+}
+
 // Main Page
+
 export default function RepoDetailPage() {
   const { owner, repo } = useParams<{ owner: string; repo: string }>()
   const location = useLocation()
@@ -481,6 +781,14 @@ export default function RepoDetailPage() {
             <UnsupportedLanguageBanner language={repoData.language} />
           )}
         </div>
+
+        {/* Chat / Retrieval section — only shown when ingestion is done */}
+        {job?.status === 'done' && repoData.full_name && (
+          <div className="space-y-3">
+            <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider px-1">Chat</h2>
+            <ChatPanel repoFullName={repoData.full_name} />
+          </div>
+        )}
       </div>
 
       {/* Toast */}

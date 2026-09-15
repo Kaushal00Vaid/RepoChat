@@ -12,3 +12,4 @@ tree-sitter
 tree-sitter-python
 tree-sitter-javascript
 inngest
+rank-bm25
