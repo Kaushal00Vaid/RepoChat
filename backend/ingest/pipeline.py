@@ -24,6 +24,7 @@ from qdrant_client.http.models import (
     Distance,
     VectorParams,
     PointStruct,
+    PayloadSchemaType,
 )
 
 from database import AsyncSessionLocal
@@ -49,13 +50,21 @@ def _get_qdrant() -> AsyncQdrantClient:
 
 
 async def _ensure_collection(client: AsyncQdrantClient) -> None:
-    """Create the Qdrant collection if it doesn't already exist."""
+    """Create the Qdrant collection and required payload indexes if they don't exist."""
     existing = {c.name for c in (await client.get_collections()).collections}
     if QDRANT_COLLECTION not in existing:
         await client.create_collection(
             collection_name=QDRANT_COLLECTION,
             vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
         )
+
+    # Qdrant requires a payload index on any field used in filtered scroll/search.
+    # This call is idempotent — safe to run even if the index already exists.
+    await client.create_payload_index(
+        collection_name=QDRANT_COLLECTION,
+        field_name="repo_full_name",
+        field_schema=PayloadSchemaType.KEYWORD,
+    )
 
 
 # DB helpers
