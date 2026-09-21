@@ -1,6 +1,15 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useParams, useLocation, useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import {
+  listConversations,
+  getMessages,
+  renameConversation,
+  deleteConversation,
+  type ConversationSummary,
+  type PersistedMessage,
+  type Citation,
+} from '../api/conversations'
 
 // Types
 interface RepoState {
@@ -42,16 +51,6 @@ interface ChunkResult {
 interface HistoryEntry {
   role: 'user' | 'assistant'
   content: string
-}
-
-interface Citation {
-  index: number
-  file_path: string
-  language: string
-  start_line: number
-  end_line: number
-  content: string
-  rrf_score: number
 }
 
 interface ChatMessage {
@@ -484,9 +483,181 @@ function ThinkingSkeleton() {
   )
 }
 
-// Chat Panel
+// ── Relative time helper ──────────────────────────────────────────────────────
 
-function ChatPanel({ repoFullName }: { repoFullName: string }) {
+function relativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime()
+  const mins = Math.floor(diff / 60_000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return `${hrs}h ago`
+  const days = Math.floor(hrs / 24)
+  if (days < 7) return `${days}d ago`
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
+// ── Conversation Sidebar ──────────────────────────────────────────────────────
+
+function ConversationSidebar({
+  conversations,
+  activeId,
+  onSelect,
+  onNewChat,
+  onRename,
+  onDelete,
+  loadingConvId,
+}: {
+  conversations: ConversationSummary[]
+  activeId: string | null
+  onSelect: (id: string) => void
+  onNewChat: () => void
+  onRename: (id: string, title: string) => void
+  onDelete: (id: string) => void
+  loadingConvId: string | null
+}) {
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
+
+  const startRename = (conv: ConversationSummary) => {
+    setRenamingId(conv.id)
+    setRenameValue(conv.title)
+  }
+
+  const commitRename = (id: string) => {
+    const trimmed = renameValue.trim()
+    if (trimmed) onRename(id, trimmed)
+    setRenamingId(null)
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* New Chat button */}
+      <button
+        id="btn-new-chat"
+        onClick={onNewChat}
+        className="flex items-center gap-2 w-full px-3 py-2.5 mb-3 rounded-xl bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/30 text-violet-300 text-sm font-medium transition-all duration-150 active:scale-[0.98] cursor-pointer"
+      >
+        <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+        </svg>
+        New Chat
+      </button>
+
+      {/* Conversation list */}
+      <div className="flex-1 overflow-y-auto space-y-1 pr-0.5">
+        {conversations.length === 0 && (
+          <p className="text-[11px] text-slate-600 text-center pt-4 px-2">No chats yet. Start one!</p>
+        )}
+
+        {conversations.map(conv => {
+          const isActive = conv.id === activeId
+          const isRenaming = renamingId === conv.id
+          const isDeleting = deleteConfirmId === conv.id
+          const isLoading = loadingConvId === conv.id
+
+          return (
+            <div
+              key={conv.id}
+              className={`group relative rounded-xl transition-all duration-150 ${
+                isActive
+                  ? 'bg-violet-500/15 border border-violet-500/25'
+                  : 'hover:bg-white/4 border border-transparent'
+              }`}
+            >
+              {isRenaming ? (
+                <div className="px-3 py-2">
+                  <input
+                    autoFocus
+                    value={renameValue}
+                    onChange={e => setRenameValue(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') commitRename(conv.id)
+                      if (e.key === 'Escape') setRenamingId(null)
+                    }}
+                    onBlur={() => commitRename(conv.id)}
+                    className="w-full bg-white/8 border border-violet-500/40 rounded-lg px-2 py-1 text-xs text-white outline-none focus:border-violet-400"
+                  />
+                </div>
+              ) : isDeleting ? (
+                <div className="px-3 py-2 space-y-2">
+                  <p className="text-[11px] text-slate-400">Delete this chat?</p>
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={() => { onDelete(conv.id); setDeleteConfirmId(null) }}
+                      className="flex-1 text-[11px] px-2 py-1 rounded-lg bg-red-500/20 border border-red-500/30 text-red-400 hover:bg-red-500/30 transition-colors cursor-pointer"
+                    >
+                      Delete
+                    </button>
+                    <button
+                      onClick={() => setDeleteConfirmId(null)}
+                      className="flex-1 text-[11px] px-2 py-1 rounded-lg bg-white/6 border border-white/10 text-slate-400 hover:bg-white/10 transition-colors cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => onSelect(conv.id)}
+                  className="w-full text-left px-3 py-2.5 pr-16"
+                >
+                  {isLoading ? (
+                    <div className="flex items-center gap-2">
+                      <span className="w-3 h-3 rounded-full border border-violet-500/40 border-t-violet-400 animate-spin shrink-0" />
+                      <span className="text-xs text-slate-500 truncate">Loading…</span>
+                    </div>
+                  ) : (
+                    <>
+                      <p className={`text-xs font-medium truncate ${isActive ? 'text-violet-200' : 'text-slate-300'}`}>
+                        {conv.title}
+                      </p>
+                      <p className="text-[10px] text-slate-600 mt-0.5">
+                        {conv.message_count > 0
+                          ? `${Math.floor(conv.message_count / 2)} turn${Math.floor(conv.message_count / 2) !== 1 ? 's' : ''} · `
+                          : ''}
+                        {relativeTime(conv.updated_at)}
+                      </p>
+                    </>
+                  )}
+                </button>
+              )}
+
+              {/* Action buttons — visible on hover when not in rename/delete mode */}
+              {!isRenaming && !isDeleting && (
+                <div className="absolute right-2 top-1/2 -translate-y-1/2 hidden group-hover:flex items-center gap-0.5">
+                  <button
+                    onClick={e => { e.stopPropagation(); startRename(conv) }}
+                    title="Rename"
+                    className="w-6 h-6 rounded-md flex items-center justify-center text-slate-500 hover:text-slate-300 hover:bg-white/8 transition-colors cursor-pointer"
+                  >
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={e => { e.stopPropagation(); setDeleteConfirmId(conv.id) }}
+                    title="Delete"
+                    className="w-6 h-6 rounded-md flex items-center justify-center text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+                  >
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                    </svg>
+                  </button>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ── Chat Panel ────────────────────────────────────────────────────────────────
+
+function ChatPanel({ repoFullName, owner, repo }: { repoFullName: string; owner: string; repo: string }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [query, setQuery] = useState('')
@@ -494,10 +665,122 @@ function ChatPanel({ repoFullName }: { repoFullName: string }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
+  // Conversations sidebar state
+  const [conversations, setConversations] = useState<ConversationSummary[]>([])
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
+  const [loadingMessages, setLoadingMessages] = useState(false)
+  const [loadingConvId, setLoadingConvId] = useState<string | null>(null)
+  const [sidebarOpen, setSidebarOpen] = useState(false) // mobile toggle
+
   // Auto-scroll to newest message
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  // Load conversations on mount and auto-select the most recent one
+  useEffect(() => {
+    let cancelled = false
+
+    listConversations(owner, repo)
+      .then(async (convs) => {
+        if (cancelled) return
+        setConversations(convs)
+
+        // Auto-select the most recent conversation (index 0 — sorted by updated_at desc)
+        if (convs.length > 0) {
+          const firstId = convs[0].id
+          setActiveConversationId(firstId)
+          setLoadingConvId(firstId)
+          try {
+            const persisted = await getMessages(firstId)
+            if (cancelled) return
+            setMessages(persisted.map(p => ({
+              id: p.id,
+              role: p.role as 'user' | 'assistant',
+              text: p.content,
+              citations: p.citations ?? undefined,
+              model: p.model ?? undefined,
+            })))
+            setHistory(persisted.map(p => ({
+              role: p.role as 'user' | 'assistant',
+              content: p.content,
+            })))
+          } catch {
+            // silent — user sees empty chat for that conversation
+          } finally {
+            if (!cancelled) setLoadingConvId(null)
+          }
+        }
+      })
+      .catch(() => {})
+
+    return () => { cancelled = true }
+  }, [owner, repo])
+
+
+  // Load messages when switching conversations
+  const selectConversation = useCallback(async (convId: string) => {
+    if (convId === activeConversationId) return
+    setLoadingConvId(convId)
+    setMessages([])
+    setHistory([])
+    setActiveConversationId(convId)
+    setSidebarOpen(false)
+    try {
+      const persisted = await getMessages(convId)
+      // Hydrate messages and history from persisted data
+      const hydratedMessages: ChatMessage[] = persisted.map(p => ({
+        id: p.id,
+        role: p.role,
+        text: p.content,
+        citations: p.citations ?? undefined,
+        model: p.model ?? undefined,
+      }))
+      const hydratedHistory: HistoryEntry[] = persisted.map(p => ({
+        role: p.role,
+        content: p.content,
+      }))
+      setMessages(hydratedMessages)
+      setHistory(hydratedHistory)
+    } catch {
+      // silent — user sees empty chat
+    } finally {
+      setLoadingConvId(null)
+    }
+  }, [activeConversationId])
+
+  const handleNewChat = useCallback(() => {
+    setActiveConversationId(null)
+    setMessages([])
+    setHistory([])
+    setSidebarOpen(false)
+    setTimeout(() => inputRef.current?.focus(), 50)
+  }, [])
+
+  const handleRename = useCallback(async (convId: string, title: string) => {
+    try {
+      await renameConversation(convId, title)
+      setConversations(prev =>
+        prev.map(c => c.id === convId ? { ...c, title } : c)
+      )
+    } catch {
+      // silent
+    }
+  }, [])
+
+  const handleDelete = useCallback(async (convId: string) => {
+    try {
+      await deleteConversation(convId)
+      setConversations(prev => prev.filter(c => c.id !== convId))
+      if (activeConversationId === convId) {
+        setActiveConversationId(null)
+        setMessages([])
+        setHistory([])
+      }
+    } catch {
+      // silent
+    }
+  }, [activeConversationId])
 
   const handleSend = useCallback(async () => {
     const q = query.trim()
@@ -527,6 +810,7 @@ function ChatPanel({ repoFullName }: { repoFullName: string }) {
         body: JSON.stringify({
           repo_full_name: repoFullName,
           query: q,
+          conversation_id: activeConversationId,  // null on first turn → lazy create
           history: historySnapshot,
           top_k: 20,
         }),
@@ -600,6 +884,14 @@ function ChatPanel({ repoFullName }: { repoFullName: string }) {
                 m.id === assistantId ? { ...m, citations } : m
               )
             )
+          } else if (event.type === 'conversation_id') {
+            // Backend auto-created a new conversation — adopt its ID and refresh sidebar
+            const newConvId = event.conversation_id as string
+            setActiveConversationId(newConvId)
+            // Refresh conversation list so the new entry appears in the sidebar
+            listConversations(owner, repo)
+              .then(setConversations)
+              .catch(() => {})
           } else if (event.type === 'error') {
             setMessages(prev =>
               prev.map(m =>
@@ -621,6 +913,10 @@ function ChatPanel({ repoFullName }: { repoFullName: string }) {
               { role: 'user', content: q },
               { role: 'assistant', content: finalText },
             ])
+            // Refresh sidebar to update turn count + recency
+            listConversations(owner, repo)
+              .then(setConversations)
+              .catch(() => {})
           }
         }
       }
@@ -636,7 +932,7 @@ function ChatPanel({ repoFullName }: { repoFullName: string }) {
       setLoading(false)
       setTimeout(() => inputRef.current?.focus(), 50)
     }
-  }, [query, loading, repoFullName, history])
+  }, [query, loading, repoFullName, history, activeConversationId, owner, repo])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -649,114 +945,180 @@ function ChatPanel({ repoFullName }: { repoFullName: string }) {
   const hasHistory = history.length > 0
 
   return (
-    <div className="flex flex-col rounded-2xl border border-white/8 bg-white/2 overflow-hidden">
-      {/* Panel header */}
-      <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-white/6">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500/20 to-indigo-500/20 border border-violet-500/20 flex items-center justify-center shrink-0">
-            <svg className="w-4 h-4 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
+    <div className="flex rounded-2xl border border-white/8 bg-white/2 overflow-hidden" style={{ minHeight: '520px' }}>
+
+      {/* ── Sidebar (desktop: always visible, mobile: slide-in panel) ── */}
+      {/* Mobile overlay */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/60 sm:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      {/* Sidebar panel */}
+      <div className={`
+        flex-shrink-0 w-56 border-r border-white/6 flex flex-col p-3 gap-0
+        sm:relative sm:translate-x-0 sm:flex sm:z-auto
+        fixed inset-y-0 left-0 z-40 bg-[#0d0d13] transition-transform duration-200
+        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full sm:translate-x-0'}
+      `}>
+        <div className="flex items-center gap-2 mb-3 pt-1">
+          <div className="w-5 h-5 rounded-md bg-violet-500/20 border border-violet-500/20 flex items-center justify-center shrink-0">
+            <svg className="w-3 h-3 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
             </svg>
           </div>
-          <div>
-            <p className="text-sm font-semibold text-white">Chat with Codebase</p>
-            <p className="text-[11px] text-slate-500">Conversational AI · GPT-4o-mini · Sources cited inline</p>
-          </div>
+          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Chats</span>
+          {/* Mobile close button */}
+          <button
+            onClick={() => setSidebarOpen(false)}
+            className="ml-auto sm:hidden text-slate-500 hover:text-slate-300 cursor-pointer"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
         </div>
-        {/* Turn counter */}
-        {hasHistory && (
-          <div className="flex items-center gap-1.5 text-[10px] text-slate-500 bg-white/4 border border-white/8 rounded-full px-2.5 py-1">
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-            {Math.floor(history.length / 2)} turn{Math.floor(history.length / 2) !== 1 ? 's' : ''}
-          </div>
-        )}
+
+        <ConversationSidebar
+          conversations={conversations}
+          activeId={activeConversationId}
+          onSelect={selectConversation}
+          onNewChat={handleNewChat}
+          onRename={handleRename}
+          onDelete={handleDelete}
+          loadingConvId={loadingConvId}
+        />
       </div>
 
-      {/* Message thread */}
-      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5 min-h-[200px] max-h-[680px]">
-        {isEmpty && !loading && (
-          <div className="flex flex-col items-center justify-center py-10 text-center gap-3">
-            <div className="w-12 h-12 rounded-2xl bg-violet-500/8 border border-violet-500/15 flex items-center justify-center">
-              <svg className="w-6 h-6 text-violet-400/60" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5" />
+      {/* ── Main chat area ── */}
+      <div className="flex flex-col flex-1 min-w-0">
+        {/* Panel header */}
+        <div className="flex items-center justify-between gap-3 px-4 py-3.5 border-b border-white/6">
+          <div className="flex items-center gap-3">
+            {/* Mobile sidebar toggle */}
+            <button
+              id="btn-sidebar-toggle"
+              onClick={() => setSidebarOpen(true)}
+              className="sm:hidden w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-200 hover:bg-white/6 transition-colors cursor-pointer"
+              aria-label="Open chats"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+              </svg>
+            </button>
+
+            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-violet-500/20 to-indigo-500/20 border border-violet-500/20 flex items-center justify-center shrink-0">
+              <svg className="w-3.5 h-3.5 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
               </svg>
             </div>
             <div>
-              <p className="text-sm font-medium text-slate-400">Ask anything about this codebase</p>
-              <p className="text-xs text-slate-600 mt-1">
-                e.g. "How does authentication work?" · "Where is rate limiting handled?"
-              </p>
+              <p className="text-sm font-semibold text-white">Chat with Codebase</p>
+              <p className="text-[11px] text-slate-500">Conversational AI · GPT-4o-mini · Sources cited inline</p>
             </div>
           </div>
-        )}
-
-        {messages.map(msg => (
-          <div
-            key={msg.id}
-            className={`flex flex-col gap-2 ${msg.role === 'user' ? 'items-end' : 'items-start'} w-full`}
-          >
-            {msg.role === 'user' ? (
-              /* User bubble */
-              <div className="max-w-[85%] px-4 py-2.5 rounded-2xl rounded-tr-sm bg-violet-600/20 border border-violet-500/20">
-                <p className="text-sm text-slate-200 leading-relaxed">{msg.text}</p>
-              </div>
-            ) : msg.error ? (
-              /* Error bubble */
-              <div className="w-full flex items-start gap-2 px-4 py-3 rounded-2xl rounded-tl-sm bg-red-500/8 border border-red-500/15">
-                <svg className="w-4 h-4 text-red-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
-                </svg>
-                <p className="text-sm text-red-300">{msg.error}</p>
-              </div>
-            ) : msg.isStreaming && !msg.text ? (
-              /* Pre-text thinking animation */
-              <div className="w-full">
-                <ThinkingSkeleton />
-              </div>
-            ) : (
-              /* Assistant answer with citations */
-              <div className="w-full">
-                <AssistantMessage msg={msg} />
-              </div>
-            )}
-          </div>
-        ))}
-
-        <div ref={bottomRef} />
-      </div>
-
-      {/* Input bar */}
-      <div className="border-t border-white/6 p-4">
-        <div className="flex items-center gap-2 rounded-xl bg-white/4 border border-white/8 px-4 py-2.5 focus-within:border-violet-500/40 focus-within:bg-white/5 transition-all duration-200">
-          <input
-            id="chat-query-input"
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Ask anything about this codebase…"
-            disabled={loading}
-            className="flex-1 bg-transparent text-sm text-slate-200 placeholder-slate-600 outline-none disabled:opacity-50"
-          />
-          <button
-            id="chat-send-btn"
-            onClick={handleSend}
-            disabled={loading || !query.trim()}
-            className="shrink-0 w-8 h-8 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-all duration-150 active:scale-95 cursor-pointer"
-          >
-            {loading ? (
-              <span className="w-3.5 h-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-            ) : (
-              <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
-              </svg>
-            )}
-          </button>
+          {/* Turn counter */}
+          {hasHistory && (
+            <div className="flex items-center gap-1.5 text-[10px] text-slate-500 bg-white/4 border border-white/8 rounded-full px-2.5 py-1">
+              <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+              {Math.floor(history.length / 2)} turn{Math.floor(history.length / 2) !== 1 ? 's' : ''}
+            </div>
+          )}
         </div>
-        <p className="text-[10px] text-slate-700 mt-2 text-center">
-          Enter to send · Citations shown inline · {hasHistory ? `${Math.floor(history.length / 2)}-turn conversation` : 'Stateful conversation'}
-        </p>
+
+        {/* Message thread */}
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5 min-h-[200px] max-h-[600px]">
+          {loadingMessages ? (
+            <div className="flex flex-col items-center justify-center py-10 gap-3">
+              <span className="w-6 h-6 rounded-full border-2 border-violet-500 border-t-transparent animate-spin" />
+              <p className="text-xs text-slate-600">Loading conversation…</p>
+            </div>
+          ) : isEmpty && !loading ? (
+            <div className="flex flex-col items-center justify-center py-10 text-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-violet-500/8 border border-violet-500/15 flex items-center justify-center">
+                <svg className="w-6 h-6 text-violet-400/60" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5" />
+                </svg>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-slate-400">Ask anything about this codebase</p>
+                <p className="text-xs text-slate-600 mt-1">
+                  e.g. "How does authentication work?" · "Where is rate limiting handled?"
+                </p>
+              </div>
+            </div>
+          ) : null}
+
+          {messages.map(msg => (
+            <div
+              key={msg.id}
+              className={`flex flex-col gap-2 ${msg.role === 'user' ? 'items-end' : 'items-start'} w-full`}
+            >
+              {msg.role === 'user' ? (
+                /* User bubble */
+                <div className="max-w-[85%] px-4 py-2.5 rounded-2xl rounded-tr-sm bg-violet-600/20 border border-violet-500/20">
+                  <p className="text-sm text-slate-200 leading-relaxed">{msg.text}</p>
+                </div>
+              ) : msg.error ? (
+                /* Error bubble */
+                <div className="w-full flex items-start gap-2 px-4 py-3 rounded-2xl rounded-tl-sm bg-red-500/8 border border-red-500/15">
+                  <svg className="w-4 h-4 text-red-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+                  </svg>
+                  <p className="text-sm text-red-300">{msg.error}</p>
+                </div>
+              ) : msg.isStreaming && !msg.text ? (
+                /* Pre-text thinking animation */
+                <div className="w-full">
+                  <ThinkingSkeleton />
+                </div>
+              ) : (
+                /* Assistant answer with citations */
+                <div className="w-full">
+                  <AssistantMessage msg={msg} />
+                </div>
+              )}
+            </div>
+          ))}
+
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Input bar */}
+        <div className="border-t border-white/6 p-4">
+          <div className="flex items-center gap-2 rounded-xl bg-white/4 border border-white/8 px-4 py-2.5 focus-within:border-violet-500/40 focus-within:bg-white/5 transition-all duration-200">
+            <input
+              id="chat-query-input"
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Ask anything about this codebase…"
+              disabled={loading}
+              className="flex-1 bg-transparent text-sm text-slate-200 placeholder-slate-600 outline-none disabled:opacity-50"
+            />
+            <button
+              id="chat-send-btn"
+              onClick={handleSend}
+              disabled={loading || !query.trim()}
+              className="shrink-0 w-8 h-8 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-all duration-150 active:scale-95 cursor-pointer"
+            >
+              {loading ? (
+                <span className="w-3.5 h-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+              ) : (
+                <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+                </svg>
+              )}
+            </button>
+          </div>
+          <p className="text-[10px] text-slate-700 mt-2 text-center">
+            Enter to send · Citations shown inline · {hasHistory ? `${Math.floor(history.length / 2)}-turn conversation` : 'Stateful conversation'}
+          </p>
+        </div>
       </div>
     </div>
   )
@@ -924,7 +1286,7 @@ export default function RepoDetailPage() {
         <div className="absolute top-40 right-1/4 w-[400px] h-[300px] bg-indigo-600/5 rounded-full blur-3xl" />
       </div>
 
-      <div className="relative mx-auto max-w-2xl px-6 py-12 space-y-8">
+      <div className="relative mx-auto max-w-4xl px-6 py-12 space-y-8">
         {/* Back button */}
         <Link
           to="/repositories"
@@ -1009,10 +1371,10 @@ export default function RepoDetailPage() {
         </div>
 
         {/* Chat / Retrieval section — only shown when ingestion is done */}
-        {job?.status === 'done' && repoData.full_name && (
+        {job?.status === 'done' && repoData.full_name && owner && repo && (
           <div className="space-y-3">
             <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider px-1">Chat</h2>
-            <ChatPanel repoFullName={repoData.full_name} />
+            <ChatPanel repoFullName={repoData.full_name} owner={owner} repo={repo} />
           </div>
         )}
       </div>

@@ -15,6 +15,7 @@ from ingest.router import router as ingest_router
 from ingest.pipeline import run_repo_ingestion  # registers the Inngest function
 from retrieval.router import router as retrieval_router
 from generation.router import router as chat_router
+from conversations.router import router as conversations_router
 
 load_dotenv()
 
@@ -50,6 +51,7 @@ app.include_router(repos_router, prefix="/api")
 app.include_router(ingest_router, prefix="/api")
 app.include_router(retrieval_router, prefix="/api")
 app.include_router(chat_router, prefix="/api")
+app.include_router(conversations_router, prefix="/api")
 
 # Serve the Inngest webhook endpoint at /api/inngest
 inngest.fast_api.serve(app, inngest_client, [run_repo_ingestion])
