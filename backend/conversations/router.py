@@ -170,18 +170,41 @@ async def create_conversation(
 @router.get("/{conversation_id}/messages", response_model=list[MessageOut])
 async def get_messages(
     conversation_id: str,
+    limit: int | None = Query(
+        default=None,
+        ge=1,
+        le=200,
+        description=(
+            "If set, return only the most-recent `limit` messages (still in ascending order). "
+            "Omit to return all messages (for full display)."
+        ),
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[MessageOut]:
-    """Return all messages for a conversation, ordered by creation time."""
+    """Return messages for a conversation in ascending order.
+
+    Pass ?limit=N to retrieve only the N most-recent rows — useful when
+    hydrating the LLM history window without fetching thousands of rows.
+    """
     await _get_owned_conversation(conversation_id, current_user, db)
 
-    result = await db.execute(
+    query = (
         select(ChatMessage)
         .where(ChatMessage.conversation_id == conversation_id)
-        .order_by(ChatMessage.created_at.asc())
     )
-    messages = result.scalars().all()
+
+    if limit is not None:
+        # Fetch the most-recent `limit` rows DESC, then reverse to get ASC order.
+        # This avoids a subquery while keeping the result chronological.
+        query = query.order_by(ChatMessage.created_at.desc()).limit(limit)
+        result = await db.execute(query)
+        messages = list(reversed(result.scalars().all()))
+    else:
+        query = query.order_by(ChatMessage.created_at.asc())
+        result = await db.execute(query)
+        messages = result.scalars().all()
+
     return [
         MessageOut(
             id=msg.id,

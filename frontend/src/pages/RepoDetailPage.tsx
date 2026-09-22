@@ -701,7 +701,9 @@ function ChatPanel({ repoFullName, owner, repo }: { repoFullName: string; owner:
               citations: p.citations ?? undefined,
               model: p.model ?? undefined,
             })))
-            setHistory(persisted.map(p => ({
+            // Cap history to the last MAX_HISTORY_PAIRS * 2 entries — display shows
+            // everything, but only this window is ever forwarded to the LLM.
+            setHistory(persisted.slice(-(MAX_HISTORY_PAIRS * 2)).map(p => ({
               role: p.role as 'user' | 'assistant',
               content: p.content,
             })))
@@ -736,10 +738,11 @@ function ChatPanel({ repoFullName, owner, repo }: { repoFullName: string; owner:
         citations: p.citations ?? undefined,
         model: p.model ?? undefined,
       }))
-      const hydratedHistory: HistoryEntry[] = persisted.map(p => ({
-        role: p.role,
-        content: p.content,
-      }))
+      // Cap history to the last MAX_HISTORY_PAIRS * 2 entries — display shows
+      // everything, but only this window is ever forwarded to the LLM.
+      const hydratedHistory: HistoryEntry[] = persisted
+        .slice(-(MAX_HISTORY_PAIRS * 2))
+        .map(p => ({ role: p.role as 'user' | 'assistant', content: p.content }))
       setMessages(hydratedMessages)
       setHistory(hydratedHistory)
     } catch {

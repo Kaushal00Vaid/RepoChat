@@ -70,11 +70,14 @@ export function createConversation(repoFullName: string): Promise<ConversationDe
 }
 
 /**
- * Fetch all persisted messages for a conversation (asc order).
- * GET /api/conversations/{id}/messages
+ * Fetch persisted messages for a conversation (asc order).
+ * Pass limit to retrieve only the most-recent N rows — avoids shipping the
+ * full thread when only the LLM history window is needed.
+ * GET /api/conversations/{id}/messages[?limit=N]
  */
-export function getMessages(conversationId: string): Promise<PersistedMessage[]> {
-  return apiFetch(`/api/conversations/${conversationId}/messages`)
+export function getMessages(conversationId: string, limit?: number): Promise<PersistedMessage[]> {
+  const qs = limit !== undefined ? `?limit=${limit}` : ''
+  return apiFetch(`/api/conversations/${conversationId}/messages${qs}`)
 }
 
 /** Rename a conversation. */
