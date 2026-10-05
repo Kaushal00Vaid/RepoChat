@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/context/AuthContext'
 import { FullPageSpinner } from '@/components/shared/LoadingSpinner'
-import { Bot } from 'lucide-react'
+import { Logo } from '@/components/ui/logo'
 import { Button } from '@/components/ui/button'
 
 function GitHubIcon({ className }: { className?: string }) {
@@ -39,9 +39,7 @@ export default function LoginPage() {
       <div className="relative w-full max-w-sm animate-fade-in-up">
         {/* Logo */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-primary shadow-lg shadow-primary/25 mb-4">
-            <Bot className="w-6 h-6 text-primary-foreground" />
-          </div>
+          <Logo className="w-12 h-12 mx-auto text-primary mb-4 drop-shadow-md" />
           <h1 className="text-xl font-bold text-foreground">Welcome to RepoChat</h1>
           <p className="mt-1.5 text-sm text-muted-foreground">Sign in to start chatting with your code</p>
         </div>

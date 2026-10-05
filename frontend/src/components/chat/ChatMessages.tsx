@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { Bot, Sparkles } from 'lucide-react'
+import { Sparkles } from 'lucide-react'
+import { Logo } from '@/components/ui/logo'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
@@ -319,7 +320,7 @@ export function UserBubble({ text }: { text: string }) {
 export function ErrorBubble({ error }: { error: string }) {
   return (
     <div className="flex items-start gap-2.5 px-4 py-3 rounded-xl rounded-tl-sm bg-destructive/8 border border-destructive/20 animate-fade-in">
-      <Bot className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
+      <Logo className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
       <p className="text-sm text-destructive">{error}</p>
     </div>
   )

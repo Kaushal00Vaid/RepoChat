@@ -1,8 +1,8 @@
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '@/context/AuthContext'
 import { useTheme } from '@/hooks/useTheme'
+import { Logo } from '@/components/ui/logo'
 import {
-  Bot,
   Moon,
   Sun,
   LogOut,
@@ -39,9 +39,7 @@ export default function Navbar() {
 
         {/* Logo */}
         <Link to="/" className="flex items-center gap-2.5 group shrink-0">
-          <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center shadow-sm group-hover:shadow-md transition-shadow">
-            <Bot className="w-4 h-4 text-primary-foreground" />
-          </div>
+          <Logo className="w-7 h-7 text-primary transition-transform duration-300 group-hover:scale-110" />
           <span className="font-bold text-sm text-foreground tracking-tight">
             RepoChat
           </span>
