@@ -30,6 +30,11 @@ export interface Citation {
   rrf_score: number
 }
 
+export interface HistoryEntry {
+  role: 'user' | 'assistant'
+  content: string
+}
+
 export interface PersistedMessage {
   id: string
   role: 'user' | 'assistant'
