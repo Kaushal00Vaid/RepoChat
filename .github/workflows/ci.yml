@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # Backend
+  backend:
+    name: Backend — ruff + pytest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install ruff pytest pytest-asyncio
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Format check (ruff)
+        run: ruff format --check .
+
+      - name: Tests
+        run: pytest tests/ -v --tb=short
+        env:
+          # Tests are pure-function / no-network; real secrets are not needed.
+          # Provide dummy values so env-var reads don't crash on import.
+          DATABASE_URL: "postgresql+psycopg://user:pass@localhost/test"
+          ACCESS_TOKEN_SECRET: "ci-access-secret"
+          REFRESH_TOKEN_SECRET: "ci-refresh-secret"
+          OPENROUTER_API_KEY: "sk-dummy"
+          GEMINI_API_KEY: "dummy"
+          QDRANT_URL: "http://localhost:6333"
+          QDRANT_API_KEY: "dummy"
+          INNGEST_DEV: "1"
+          INNGEST_SIGNING_KEY: "dummy"
+          INNGEST_EVENT_KEY: "dummy"
+          CRON_SECRET: "dummy-cron-secret"
+
+  # Frontend
+  frontend:
+    name: Frontend — eslint + tsc + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint (eslint)
+        run: npm run lint
+
+      - name: Type-check (tsc)
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+        env:
+          # Vite inlines VITE_* vars at build time.
+          # Provide a dummy backend URL so the build succeeds without secrets.
+          VITE_API_URL: "https://repochat-api.vercel.app"

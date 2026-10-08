@@ -2,11 +2,20 @@
 Ingestion pipeline — the Inngest background function.
 
 Steps (each is a durable, auto-retried Inngest step):
-  1. fetch-file-tree  — get recursive file listing from GitHub
-  2. validate-files   — reject if > 300 code files, build fetch list
-  3. chunk-files      — fetch each file and chunk with AST parser
-  4. embed-and-upsert — embed chunks and upsert to Qdrant
-  5. mark-done        — update DB job status to 'done'
+  1. fetch-file-tree    — get recursive file listing from GitHub
+  2. validate-files     — reject if > 300 code files, build fetch list
+  3. mark-running       — update DB job status to 'running'
+  4. chunk-embed-batch-N — for each batch of files:
+                           fetch → chunk → embed → upsert to Qdrant
+                           returns { files_processed, chunks_upserted } (no content)
+  5. mark-done          — update DB job status to 'done'
+
+Why batched steps instead of one big chunk-files step?
+  Inngest stores every step's return value.  Returning 300 files' worth of
+  raw source content in a single step can easily exceed Inngest's ~4 MB
+  step-output limit AND Vercel's 4.5 MB response-body cap.  By chunking and
+  embedding inside the same step and returning only counts we stay well under
+  both limits regardless of repo size.
 
 On any unhandled error the job is marked 'failed' in a final step.
 """
@@ -39,6 +48,7 @@ QDRANT_COLLECTION = "repochat_chunks"
 EMBEDDING_DIM = 1536          # text-embedding-3-small / text-embedding-004
 UPSERT_BATCH = 64             # Qdrant upsert batch size
 MAX_FILES = 300
+FILE_BATCH_SIZE = 30          # files per Inngest step (keeps step output small)
 
 
 # Qdrant helpers
@@ -133,6 +143,76 @@ async def _fetch_file_content(url: str, token: str) -> str | None:
         return None
 
 
+async def _process_file_batch(
+    file_batch: list[dict],
+    repo_full_name: str,
+    token: str,
+    job_id: str,
+    qdrant: AsyncQdrantClient,
+) -> dict[str, int]:
+    """
+    Fetch, chunk, embed, and upsert one batch of files to Qdrant.
+
+    Returns { "files_processed": int, "chunks_upserted": int } — no raw content.
+    This is the key design: step output stays tiny regardless of file sizes.
+    """
+    all_chunks: list[dict] = []
+
+    for item in file_batch:
+        path = item["path"]
+        lang = detect_language(path)
+        if lang is None:
+            continue
+        raw_url = item.get("url", "")
+        content = await _fetch_file_content(raw_url, token)
+        if content is None:
+            continue
+        chunks = chunk_file(path, content, lang)
+        for c in chunks:
+            if not c.content.strip():
+                continue
+            all_chunks.append(
+                {
+                    "file_path": c.file_path,
+                    "language": c.language,
+                    "start_line": c.start_line,
+                    "end_line": c.end_line,
+                    "content": c.content,
+                    "chunk_index": c.chunk_index,
+                }
+            )
+
+    if not all_chunks:
+        return {"files_processed": len(file_batch), "chunks_upserted": 0}
+
+    # Embed in sub-batches
+    upserted = 0
+    for batch_start in range(0, len(all_chunks), UPSERT_BATCH):
+        batch = all_chunks[batch_start : batch_start + UPSERT_BATCH]
+        texts = [c["content"] for c in batch]
+        vectors = await embed_texts(texts)
+        points = [
+            PointStruct(
+                id=str(uuid.uuid4()),
+                vector=vec,
+                payload={
+                    "repo_full_name": repo_full_name,
+                    "file_path": c["file_path"],
+                    "language": c["language"],
+                    "start_line": c["start_line"],
+                    "end_line": c["end_line"],
+                    "content": c["content"],
+                    "chunk_index": c["chunk_index"],
+                },
+            )
+            for c, vec in zip(batch, vectors)
+        ]
+        await qdrant.upsert(collection_name=QDRANT_COLLECTION, points=points)
+        upserted += len(batch)
+
+    return {"files_processed": len(file_batch), "chunks_upserted": upserted}
+
+
 # Inngest function definition
 @inngest_client.create_function(
     fn_id="repo-ingestion",
@@ -192,95 +272,73 @@ async def run_repo_ingestion(ctx: inngest.Context) -> dict[str, Any]:
 
         await step.run("mark-running", _mark_running)
 
-        # chunk-files (fetch each file and AST-chunk it)
-        async def _chunk_all_files() -> list[dict]:
-            """
-            Returns a serialisable list of chunk dicts (Chunk dataclass → dict).
-            We do this in a single step to avoid thousands of Inngest step calls.
-            """
-            all_chunks: list[dict] = []
-            for item in code_files:
-                path = item["path"]
-                lang = detect_language(path)
-                if lang is None:
-                    continue
-                raw_url = item.get("url", "")
-                # GitHub tree API gives a blob URL; convert to raw content
-                # by hitting the same URL with Accept: application/vnd.github.raw
-                content = await _fetch_file_content(raw_url, token)
-                if content is None:
-                    continue
-                chunks = chunk_file(path, content, lang)
-                for c in chunks:
-                    all_chunks.append(
-                        {
-                            "file_path": c.file_path,
-                            "language": c.language,
-                            "start_line": c.start_line,
-                            "end_line": c.end_line,
-                            "content": c.content,
-                            "chunk_index": c.chunk_index,
-                        }
-                    )
-            return all_chunks
-
-        chunk_dicts: list[dict] = await step.run("chunk-files", _chunk_all_files)
-
-        total = len(chunk_dicts)
-
-        if total == 0:
+        if not code_files:
             async def _mark_done_empty() -> None:
                 await _update_job(job_id, status="done", chunks_ingested=0)
 
             await step.run("mark-done", _mark_done_empty)
             return {"status": "done", "chunks": 0}
 
-        # embed-and-upsert
-        async def _embed_and_upsert() -> int:
+        # Ensure Qdrant collection exists once, before the batched steps.
+        # We do this in a dedicated step so it's retried cleanly if it fails.
+        async def _setup_qdrant() -> None:
             qdrant = _get_qdrant()
             await _ensure_collection(qdrant)
-            await _update_job(job_id, total_chunks=total)  # set total_chunks inside the step
-
-            ingested = 0
-            for batch_start in range(0, total, UPSERT_BATCH):
-                batch = chunk_dicts[batch_start : batch_start + UPSERT_BATCH]
-                texts = [c["content"] for c in batch]
-
-                vectors = await embed_texts(texts)
-
-                points = [
-                    PointStruct(
-                        id=str(uuid.uuid4()),
-                        vector=vec,
-                        payload={
-                            "repo_full_name": repo_full_name,
-                            "file_path": c["file_path"],
-                            "language": c["language"],
-                            "start_line": c["start_line"],
-                            "end_line": c["end_line"],
-                            "content": c["content"],
-                            "chunk_index": c["chunk_index"],
-                        },
-                    )
-                    for c, vec in zip(batch, vectors)
-                ]
-                await qdrant.upsert(collection_name=QDRANT_COLLECTION, points=points)
-
-                ingested += len(batch)
-                await _update_job(job_id, chunks_ingested=ingested)
-
             await qdrant.close()
-            return ingested
 
-        ingested_count: int = await step.run("embed-and-upsert", _embed_and_upsert)
+        await step.run("setup-qdrant", _setup_qdrant)
+
+        # chunk-embed-batch-N  (one step per FILE_BATCH_SIZE files)
+        # Each step: fetches files, chunks, embeds, upserts. Returns only counts.
+        total_chunks_upserted = 0
+        file_batches = [
+            code_files[i : i + FILE_BATCH_SIZE]
+            for i in range(0, len(code_files), FILE_BATCH_SIZE)
+        ]
+
+        for batch_idx, file_batch in enumerate(file_batches):
+            # Capture loop variables so inner functions close over the right values
+            batch = file_batch
+            idx = batch_idx
+
+            async def _chunk_embed_batch(
+                _batch: list[dict] = batch,
+            ) -> dict[str, int]:
+                qdrant = _get_qdrant()
+                try:
+                    result = await _process_file_batch(
+                        _batch, repo_full_name, token, job_id, qdrant
+                    )
+                finally:
+                    await qdrant.close()
+                return result
+
+            batch_result: dict[str, int] = await step.run(
+                f"chunk-embed-batch-{batch_idx}", _chunk_embed_batch
+            )
+            total_chunks_upserted += batch_result["chunks_upserted"]
+            # Update running progress after each batch using the accumulated total.
+            # This runs in the outer function scope (not inside a step), so it
+            # executes on every replay pass — that's intentional and cheap.
+            await _update_job(job_id, chunks_ingested=total_chunks_upserted)
+
+        # Update final total_chunks count now that we know it
+        _final_total = total_chunks_upserted
+
+        async def _update_total_chunks() -> None:
+            await _update_job(job_id, total_chunks=_final_total)
+
+        await step.run("update-total-chunks", _update_total_chunks)
 
         # mark-done
         async def _mark_done() -> None:
-            await _update_job(job_id, status="done", chunks_ingested=ingested_count)
+            await _update_job(
+                job_id, status="done", chunks_ingested=total_chunks_upserted
+            )
 
         await step.run("mark-done", _mark_done)
 
-        return {"status": "done", "chunks": ingested_count}
+        return {"status": "done", "chunks": total_chunks_upserted}
 
     except EmbeddingError as e:
         await _update_job(job_id, status="failed", error_message=str(e))

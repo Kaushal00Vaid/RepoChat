@@ -13,3 +13,6 @@ tree-sitter-python
 tree-sitter-javascript
 inngest
 rank-bm25
+pytest
+pytest-asyncio
+ruff

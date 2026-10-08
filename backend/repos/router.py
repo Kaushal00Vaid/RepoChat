@@ -33,7 +33,7 @@ async def list_repositories(
                 "direction": "desc",
                 "per_page": per_page,
                 "page": page,
-                "type": "all",   # includes private repos
+                "type": "owner",  # only repos the authenticated user owns (not collaborator/member repos)
             },
         )
 
