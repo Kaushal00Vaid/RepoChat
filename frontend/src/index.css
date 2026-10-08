@@ -287,19 +287,19 @@
 }
 
 .demo-seq-user {
-  animation: demo-fade-in 12s ease-out infinite;
+  animation: demo-fade-in 12s ease-out forwards;
 }
 .demo-seq-thinking {
-  animation: demo-thinking 12s ease-out infinite;
+  animation: demo-thinking 12s ease-out forwards;
 }
 .demo-seq-ai {
-  animation: demo-ai-text 12s ease-out infinite;
+  animation: demo-ai-text 12s ease-out forwards;
 }
 .demo-seq-cursor {
   animation: cursor-click-local 4.9s ease-in-out forwards;
   transform-origin: top left;
 }
 .demo-seq-source {
-  animation: demo-source-expand 12s ease-out infinite;
+  animation: demo-source-expand 12s ease-out forwards;
   overflow: hidden;
 }
