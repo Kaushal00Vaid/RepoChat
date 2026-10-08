@@ -59,7 +59,7 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
  * GET /api/conversations?owner={owner}&repo={repo}
  */
 export function listConversations(owner: string, repo: string): Promise<ConversationSummary[]> {
-  return apiFetch(`/api/conversations/?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`)
+  return apiFetch(`/api/conversations?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`)
 }
 
 /**
@@ -67,7 +67,7 @@ export function listConversations(owner: string, repo: string): Promise<Conversa
  * POST /api/conversations/  body: { repo_full_name }
  */
 export function createConversation(repoFullName: string): Promise<ConversationDetail> {
-  return apiFetch(`/api/conversations/`, {
+  return apiFetch(`/api/conversations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ repo_full_name: repoFullName }),

@@ -99,7 +99,7 @@ async def _get_owned_conversation(
 
 # Endpoints
 
-@router.get("/", response_model=list[ConversationSummary])
+@router.get("", response_model=list[ConversationSummary])
 async def list_conversations(
     owner: str = Query(..., description="GitHub repository owner."),
     repo: str = Query(..., description="GitHub repository name."),
@@ -143,7 +143,7 @@ async def list_conversations(
     ]
 
 
-@router.post("/", response_model=ConversationDetail, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=ConversationDetail, status_code=status.HTTP_201_CREATED)
 async def create_conversation(
     body: CreateConversationRequest,
     current_user: User = Depends(get_current_user),
