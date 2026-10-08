@@ -75,7 +75,7 @@ export function ChatPanel({ repoFullName, owner, repo }: ChatPanelProps) {
 
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
-  const [loadingMessages, setLoadingMessages] = useState(false)
+  const [loadingMessages] = useState(false)
   const [loadingConvId, setLoadingConvId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
