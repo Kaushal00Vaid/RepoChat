@@ -115,11 +115,11 @@ async def condense_query(query: str, history: list[dict]) -> str:
 
     history_text = _format_history_for_condenser(history)
 
-    # Try OpenRouter first
+    # Try Gemini first
     try:
         condensed = await _call_condenser(
-            _get_openrouter(),
-            "openai/gpt-4o-mini",
+            _get_gemini(),
+            "gemini-2.5-flash",
             history_text,
             query,
         )
@@ -128,23 +128,23 @@ async def condense_query(query: str, history: list[dict]) -> str:
             return condensed
     except (APIError, Exception) as primary_err:
         logger.warning(
-            "Condenser: OpenRouter failed (%s), trying Gemini fallback…", primary_err
+            "Condenser: Gemini failed (%s), trying OpenRouter fallback…", primary_err
         )
         try:
             condensed = await _call_condenser(
-                _get_gemini(),
-                "gemini-2.5-flash",
+                _get_openrouter(),
+                "openai/gpt-4o-mini",
                 history_text,
                 query,
             )
             if condensed:
                 logger.info(
-                    "Condensed query (Gemini fallback): %r → %r", query, condensed
+                    "Condensed query (OpenRouter fallback): %r → %r", query, condensed
                 )
                 return condensed
         except (APIError, Exception) as fallback_err:
             logger.warning(
-                "Condenser: both providers failed (OpenRouter: %s, Gemini: %s). "
+                "Condenser: both providers failed (Gemini: %s, OpenRouter: %s). "
                 "Falling back to original query.",
                 primary_err,
                 fallback_err,

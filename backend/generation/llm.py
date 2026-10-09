@@ -125,37 +125,37 @@ async def stream_answer(
     accumulated = ""
     model_used: str | None = None
 
-    # Try OpenRouter first
+    # Try Gemini first
     try:
-        model_used = "openai/gpt-4o-mini"
-        yield _sse({"type": "meta", "model": "gpt-4o-mini"})
+        model_used = "gemini-2.5-flash"
+        yield _sse({"type": "meta", "model": "gemini-2.5-flash"})
 
         async for delta_text in _stream_from_client(
-            _get_openrouter(), model_used, messages
+            _get_gemini(), model_used, messages
         ):
             accumulated += delta_text
             yield _sse({"type": "delta", "content": delta_text})
 
     except (APIError, APIConnectionError, APIStatusError, Exception) as primary_err:
         logger.warning(
-            "LLM stream: OpenRouter failed (%s), switching to Gemini fallback…",
+            "LLM stream: Gemini failed (%s), switching to OpenRouter fallback…",
             primary_err,
         )
-        # Reset and retry with Gemini
+        # Reset and retry with OpenRouter
         accumulated = ""
-        model_used = "gemini-2.5-flash"
-        yield _sse({"type": "meta", "model": "gemini-2.5-flash"})
+        model_used = "openai/gpt-4o-mini"
+        yield _sse({"type": "meta", "model": "gpt-4o-mini"})
 
         try:
             async for delta_text in _stream_from_client(
-                _get_gemini(), "gemini-2.5-flash", messages
+                _get_openrouter(), "openai/gpt-4o-mini", messages
             ):
                 accumulated += delta_text
                 yield _sse({"type": "delta", "content": delta_text})
 
         except (APIError, APIConnectionError, APIStatusError, Exception) as fallback_err:
             logger.error(
-                "LLM stream: both providers failed. OpenRouter: %s | Gemini: %s",
+                "LLM stream: both providers failed. Gemini: %s | OpenRouter: %s",
                 primary_err,
                 fallback_err,
             )
