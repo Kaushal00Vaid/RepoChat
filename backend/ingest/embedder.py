@@ -57,8 +57,9 @@ async def _embed_batch_openrouter(texts: list[str]) -> list[list[float]]:
 
 async def _embed_batch_gemini(texts: list[str]) -> list[list[float]]:
     resp = await _get_gemini().embeddings.create(
-        model="text-embedding-004",
+        model="gemini-embedding-001",
         input=texts,
+        dimensions=1536,  # MRL truncation — matches our Qdrant collection
     )
     return [item.embedding for item in sorted(resp.data, key=lambda x: x.index)]
 
