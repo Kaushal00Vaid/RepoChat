@@ -103,6 +103,7 @@ SKIP_FILENAMES: frozenset[str] = frozenset(
 )
 
 MAX_FILE_BYTES = 500_000  # 500 KB
+MAX_CHUNK_CHARS = 20000   # ~5000 tokens (well below 8192 limit)
 
 # Data types
 @dataclass
@@ -147,6 +148,52 @@ def detect_language(github_path: str) -> str | None:
     return None
 
 
+def _enforce_size_limit(chunks: list[Chunk]) -> list[Chunk]:
+    """Ensure no chunk exceeds the maximum character limit for embedding models."""
+    final_chunks: list[Chunk] = []
+    chunk_idx = 0
+    
+    for c in chunks:
+        if len(c.content) <= MAX_CHUNK_CHARS:
+            c.chunk_index = chunk_idx
+            final_chunks.append(c)
+            chunk_idx += 1
+        else:
+            # Split large chunk line-by-line, enforcing hard char limits
+            lines = c.content.splitlines(keepends=True)
+            current_text = ""
+            current_start = c.start_line
+            
+            for line in lines:
+                while len(line) > MAX_CHUNK_CHARS:
+                    # Flush current text if any
+                    if current_text:
+                        final_chunks.append(Chunk(c.file_path, c.language, current_start, current_start + current_text.count("\n"), current_text.strip(), chunk_idx))
+                        chunk_idx += 1
+                        current_start += current_text.count("\n")
+                        current_text = ""
+                        
+                    # Slice the massive line
+                    slice_text = line[:MAX_CHUNK_CHARS]
+                    final_chunks.append(Chunk(c.file_path, c.language, current_start, current_start, slice_text.strip(), chunk_idx))
+                    chunk_idx += 1
+                    line = line[MAX_CHUNK_CHARS:]
+                
+                if len(current_text) + len(line) > MAX_CHUNK_CHARS and current_text:
+                    final_chunks.append(Chunk(c.file_path, c.language, current_start, current_start + current_text.count("\n"), current_text.strip(), chunk_idx))
+                    chunk_idx += 1
+                    current_start += current_text.count("\n")
+                    current_text = line
+                else:
+                    current_text += line
+                    
+            if current_text.strip():
+                final_chunks.append(Chunk(c.file_path, c.language, current_start, c.end_line, current_text.strip(), chunk_idx))
+                chunk_idx += 1
+                
+    return final_chunks
+
+
 def chunk_file(file_path: str, content: str, language: str) -> list[Chunk]:
     """
     Parse `content` with tree-sitter and split at top-level
@@ -159,10 +206,12 @@ def chunk_file(file_path: str, content: str, language: str) -> list[Chunk]:
         return []
 
     if language == "python":
-        return _chunk_python(file_path, content)
+        chunks = _chunk_python(file_path, content)
     else:
         # Both JS and TS use the JavaScript grammar
-        return _chunk_js(file_path, content, language)
+        chunks = _chunk_js(file_path, content, language)
+        
+    return _enforce_size_limit(chunks)
 
 
 # Internal parsing helpers

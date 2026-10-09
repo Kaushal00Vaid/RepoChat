@@ -83,19 +83,44 @@ async def _embed_batch_gemini(texts: list[str]) -> list[list[float]]:
 
 async def _embed_batch(texts: list[str]) -> list[list[float]]:
     """Try OpenRouter first, fall back to Gemini native SDK."""
-    try:
-        return await _embed_batch_openrouter(texts)
-    except (APIError, Exception) as primary_err:
-        logger.warning(
-            "OpenRouter embedding failed (%s), trying Gemini fallback…", primary_err
-        )
+    primary_err_msg = ""
+    
+    # Try OpenRouter with basic retries for rate limits
+    for attempt in range(2):
+        try:
+            return await _embed_batch_openrouter(texts)
+        except Exception as e:
+            if "429" in str(e):
+                logger.warning("OpenRouter rate limit, retrying in 2s...")
+                await asyncio.sleep(2)
+                continue
+            primary_err_msg = str(e)
+            break  # Break for 402 or other errors to try Gemini
+
+    logger.warning("OpenRouter embedding failed (%s), trying Gemini fallback…", primary_err_msg)
+
+    # Try Gemini fallback with exponential backoff for its strict 15 RPM limit
+    for attempt in range(5):
         try:
             return await _embed_batch_gemini(texts)
         except Exception as fallback_err:
+            err_str = str(fallback_err).lower()
+            if "429" in err_str or "quota" in err_str or "exhausted" in err_str:
+                sleep_time = 4 + (2 ** attempt)  # e.g., 5s, 6s, 8s, 12s, 20s
+                logger.warning(
+                    f"Gemini rate limit/quota hit. Retrying in {sleep_time}s... (Attempt {attempt+1}/5)"
+                )
+                await asyncio.sleep(sleep_time)
+                continue
             raise EmbeddingError(
                 f"Both embedding providers failed. "
-                f"OpenRouter: {primary_err}. Gemini: {fallback_err}."
+                f"OpenRouter: {primary_err_msg}. Gemini: {fallback_err}."
             ) from fallback_err
+
+    raise EmbeddingError(
+        f"Both embedding providers failed after retries. "
+        f"OpenRouter: {primary_err_msg}."
+    )
 
 
 async def embed_texts(texts: Sequence[str]) -> list[list[float]]:
@@ -109,4 +134,9 @@ async def embed_texts(texts: Sequence[str]) -> list[list[float]]:
         batch = texts[i : i + OPENROUTER_BATCH_SIZE]
         embeddings = await _embed_batch(batch)
         results.extend(embeddings)
+        
+        # Add a small delay between batches to help avoid immediate rate limits
+        if i + OPENROUTER_BATCH_SIZE < len(texts):
+            await asyncio.sleep(1.0)
+            
     return results
