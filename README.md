@@ -4,11 +4,15 @@ Chat with your codebase. Sign in with GitHub, pick a repository, ingest it, and 
 
 [Live](https://repo-chat-sand.vercel.app/) | Built by Kaushal
 
-<video controls src="assets/demo.mp4" title="Demo Video"></video>
+
+
+https://github.com/user-attachments/assets/b34c642d-951e-4eb3-aa2e-376a91993eb9
+
+
 
 <table>
   <tr>
-    <td width="50%"><img src="assets/Landing.jpg" alt="Landing"></td>
+    <td width="50%"><img src="assets/landing.jpg" alt="Landing"></td>
     <td width="50%"><img src="assets/repos.jpg" alt="Repositories"></td>
   </tr>
   <tr>
